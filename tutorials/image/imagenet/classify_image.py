@@ -161,11 +161,7 @@ def run_inference_on_image(image):
     node_lookup = NodeLookup()
 
     top_k = predictions.argsort()[-FLAGS.num_top_predictions:][::-1]
-    for node_id in top_k:
-      human_string = node_lookup.id_to_string(node_id)
-      score = predictions[node_id]
-      print('%s (score = %.5f)' % (human_string, score))
-
+    return list(map(lambda node_id: (node_lookup.id_to_string(node_id), predictions[node_id]), top_k))
 
 def maybe_download_and_extract():
   """Download and extract model tar file."""
@@ -185,12 +181,94 @@ def maybe_download_and_extract():
     print('Successfully downloaded', filename, statinfo.st_size, 'bytes.')
   tarfile.open(filepath, 'r:gz').extractall(dest_directory)
 
+def write_file(name, title="Waiting for an image", delay=10):
+  s = ("<html><head><title>{0}</title>"
+      '<meta http-equiv="refresh" content="{1}" >'
+      '</head>'
+      '<body><center><img src="img.jpg"><br><h2>{0}</h2></center></body>'
+      '</html>').format(title, delay)
+  with open("index.html", 'w') as file:
+      file.write(s)
+    
+def serve_http():
+  import SimpleHTTPServer
+  import SocketServer
+  PORT = 8000
+  write_file("index.html", "Waiting for first image")
+  Handler = SimpleHTTPServer.SimpleHTTPRequestHandler
+  httpd = SocketServer.TCPServer(("", PORT), Handler)
+  print("serving at http://0.0.0.0:%d" % (PORT))
+  httpd.serve_forever()
+
+def pull_from_minio():
+  import tempfile
+  tmpdir = tempfile.mkdtemp(suffix="image-ai")
+  import os
+  import time
+
+  os.chdir(tmpdir)
+  from threading import Thread
+  Thread(target=serve_http).start()
+
+  while True:
+    import urllib2
+    import json
+    # resp = '{"job":{"id":"8f8d8390-5545-11e7-8950-83b1c5d7f8d9","data":{"Key":"fook/rds.xlsx","msg":"","time":"2017-06-19T23:18:10Z","level":"info","Records":[{"s3":{"bucket":{"arn":"arn:aws:s3:::fook","name":"fook","ownerIdentity":{"principalId":"AKIAIOSFODNN7EXAMPLE"}},"object":{"key":"rds.xlsx","eTag":"12d8794b80a50209f3ed60adaa1aecaa","size":50166,"sequencer":"14C9A91C74A2620C","versionId":"1","contentType":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","userDefined":{"content-type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}},"configurationId":"Config","s3SchemaVersion":"1.0"},"source":{"host":"","port":"","userAgent":""},"awsRegion":"us-east-1","eventName":"s3:ObjectCreated:Put","eventTime":"2017-06-19T23:18:10Z","eventSource":"minio:s3","eventVersion":"2.0","userIdentity":{"principalId":"AKIAIOSFODNN7EXAMPLE"},"responseElements":{"x-amz-request-id":"14C9A91C74A2620C","x-minio-origin-endpoint":"http://10.244.0.62:9000"},"requestParameters":{"sourceIPAddress":"10.244.0.1:49341"}}],"EventType":"s3:ObjectCreated:Put"},"name":"webhook"}}'
+    response = urllib2.urlopen(FLAGS.queue_fetch)
+    resp = response.read()
+    # print(resp)
+    obj = json.loads(resp)
+    job = obj['job']
+    dest_file = None
+    if job:
+      data = job['data']
+      # print(data.keys())
+      # print(data['Key'])
+      for record in data['Records']:
+        eventName = record['eventName']
+        if record['eventName'] == 's3:ObjectCreated:Put':
+          key = record['s3']['object']['key']
+          bucket = record['s3']['bucket']['name']
+          # print(bucket, key)
+          import boto3
+          # boto3.set_stream_logger(name='botocore')
+          from botocore.client import Config
+          s3 = boto3.resource('s3', endpoint_url=FLAGS.s3_url,
+                              config=Config(signature_version='s3v4'),
+                              aws_access_key_id=FLAGS.s3_access_key,
+                              aws_secret_access_key=FLAGS.s3_secret_key,
+                              region_name='us-east-1')
+          try:
+            dest_file = "tmp.img"
+            s3.Bucket(bucket).download_file(key, dest_file)
+          except:
+            print ("Failed to download %s from minio, probly another filename encoding issue" % key)
+            dest_file = None
+          if dest_file:
+            ret = run_inference_on_image(dest_file)
+            if len(ret):
+              print(ret)
+              os.rename(dest_file, "img.jpg")
+              write_file("index.html", str(ret[0]))
+        else:
+          print(eventName)
+        import urllib2
+        req = urllib2.Request(FLAGS.queue_complete, job['id'])
+        response = urllib2.urlopen(req)
+        response_txt = response.read()
+        print("complete", job['id'], response_txt)
+        if dest_file:
+          time.sleep(10)
+    else:
+      time.sleep(1)
 
 def main(_):
   maybe_download_and_extract()
+  if FLAGS.queue_fetch != '':
+    return pull_from_minio()
   image = (FLAGS.image_file if FLAGS.image_file else
            os.path.join(FLAGS.model_dir, 'cropped_panda.jpg'))
-  run_inference_on_image(image)
+  print(run_inference_on_image(image))
 
 
 if __name__ == '__main__':
@@ -223,5 +301,36 @@ if __name__ == '__main__':
       default=5,
       help='Display this many predictions.'
   )
+  parser.add_argument(
+      '--queue_fetch',
+      type=str,
+      default='',
+      help='Event queue url to get jobs to images from s3'
+  )
+  parser.add_argument(
+      '--queue_complete',
+      type=str,
+      default='',
+      help='Event queue url to complete jobs'
+  )
+  parser.add_argument(
+      '--s3_url',
+      type=str,
+      default='',
+      help='S3 URL'
+  )
+  parser.add_argument(
+      '--s3_access_key',
+      type=str,
+      default='',
+      help='S3 access key'
+  )
+  parser.add_argument(
+      '--s3_secret_key',
+      type=str,
+      default='',
+      help='S3 secret access key'
+  )
+
   FLAGS, unparsed = parser.parse_known_args()
   tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
