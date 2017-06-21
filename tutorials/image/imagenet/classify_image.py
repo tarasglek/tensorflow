@@ -193,7 +193,7 @@ def write_file(name, title="Waiting for an image", delay=10):
 def serve_http():
   import SimpleHTTPServer
   import SocketServer
-  PORT = 8000
+  PORT = FLAGS.listen_port
   write_file("index.html", "Waiting for first image")
   Handler = SimpleHTTPServer.SimpleHTTPRequestHandler
   httpd = SocketServer.TCPServer(("", PORT), Handler)
@@ -216,7 +216,7 @@ def pull_from_minio():
     # resp = '{"job":{"id":"8f8d8390-5545-11e7-8950-83b1c5d7f8d9","data":{"Key":"fook/rds.xlsx","msg":"","time":"2017-06-19T23:18:10Z","level":"info","Records":[{"s3":{"bucket":{"arn":"arn:aws:s3:::fook","name":"fook","ownerIdentity":{"principalId":"AKIAIOSFODNN7EXAMPLE"}},"object":{"key":"rds.xlsx","eTag":"12d8794b80a50209f3ed60adaa1aecaa","size":50166,"sequencer":"14C9A91C74A2620C","versionId":"1","contentType":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","userDefined":{"content-type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}},"configurationId":"Config","s3SchemaVersion":"1.0"},"source":{"host":"","port":"","userAgent":""},"awsRegion":"us-east-1","eventName":"s3:ObjectCreated:Put","eventTime":"2017-06-19T23:18:10Z","eventSource":"minio:s3","eventVersion":"2.0","userIdentity":{"principalId":"AKIAIOSFODNN7EXAMPLE"},"responseElements":{"x-amz-request-id":"14C9A91C74A2620C","x-minio-origin-endpoint":"http://10.244.0.62:9000"},"requestParameters":{"sourceIPAddress":"10.244.0.1:49341"}}],"EventType":"s3:ObjectCreated:Put"},"name":"webhook"}}'
     response = urllib2.urlopen(FLAGS.queue_fetch)
     resp = response.read()
-    # print(resp)
+    print(resp)
     obj = json.loads(resp)
     job = obj['job']
     dest_file = None
@@ -241,8 +241,8 @@ def pull_from_minio():
           try:
             dest_file = "tmp.img"
             s3.Bucket(bucket).download_file(key, dest_file)
-          except:
-            print ("Failed to download %s from minio, probly another filename encoding issue" % key)
+          except Exception as e:
+            print ("Failed to download %s from minio, probly another filename encoding issue" % key, e)
             dest_file = None
           if dest_file:
             ret = run_inference_on_image(dest_file)
@@ -331,6 +331,16 @@ if __name__ == '__main__':
       default='',
       help='S3 secret access key'
   )
+  parser.add_argument(
+      '--listen_port',
+      type=int,
+      default=8000,
+      help='Listen port'
+  )
 
   FLAGS, unparsed = parser.parse_known_args()
-  tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
+  try:
+    tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
+  except Exception as e:
+    print("Fatal exception, exiting", e)
+    sys.exit(1)
