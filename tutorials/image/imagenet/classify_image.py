@@ -44,6 +44,8 @@ import tarfile
 import numpy as np
 from six.moves import urllib
 import tensorflow as tf
+import threading
+import SimpleHTTPServer
 
 FLAGS = None
 
@@ -51,6 +53,7 @@ FLAGS = None
 DATA_URL = 'http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz'
 # pylint: enable=line-too-long
 
+gQueueReady = threading.Event()
 
 class NodeLookup(object):
   """Converts integer node ID's to human readable labels."""
@@ -189,13 +192,20 @@ def write_file(name, title="Waiting for an image", delay=10):
       '</html>').format(title, delay)
   with open("index.html", 'w') as file:
       file.write(s)
-    
+
+
+class MyHTTPHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
+  def do_GET(self):
+    SimpleHTTPServer.SimpleHTTPRequestHandler.do_GET(self)
+    if self.path == "/img.jpg":
+      gQueueReady.set()
+      print("ready!", self.path)
+
 def serve_http():
-  import SimpleHTTPServer
   import SocketServer
   PORT = FLAGS.listen_port
   write_file("index.html", "Waiting for first image")
-  Handler = SimpleHTTPServer.SimpleHTTPRequestHandler
+  Handler = MyHTTPHandler
   httpd = SocketServer.TCPServer(("", PORT), Handler)
   print("serving at http://0.0.0.0:%d" % (PORT))
   httpd.serve_forever()
@@ -207,8 +217,7 @@ def pull_from_minio():
   import time
 
   os.chdir(tmpdir)
-  from threading import Thread
-  Thread(target=serve_http).start()
+  threading.Thread(target=serve_http).start()
 
   while True:
     import urllib2
@@ -258,7 +267,9 @@ def pull_from_minio():
         response_txt = response.read()
         print("complete", job['id'], response_txt)
         if dest_file:
-          time.sleep(10)
+          # wait for http serve to serve this image
+          print("waiting to serve...")
+          gQueueReady.wait()
     else:
       time.sleep(1)
 
