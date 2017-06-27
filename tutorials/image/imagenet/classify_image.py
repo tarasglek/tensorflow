@@ -193,7 +193,6 @@ def write_file(name, title="Waiting for an image", delay=10):
   with open("index.html", 'w') as file:
       file.write(s)
 
-
 class MyHTTPHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
   def do_GET(self):
     SimpleHTTPServer.SimpleHTTPRequestHandler.do_GET(self)
@@ -217,7 +216,9 @@ def pull_from_minio():
   import time
 
   os.chdir(tmpdir)
-  threading.Thread(target=serve_http).start()
+  t = threading.Thread(target=serve_http)
+  t.daemon = True
+  t.start()
 
   while True:
     import urllib2
